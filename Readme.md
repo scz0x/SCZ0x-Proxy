@@ -100,7 +100,7 @@ SCZ-Proxy/
 ```
 ## 📣 Stay Connected
 
-Join the conversation on [Telegram](https://t.me/YourChannelUsername)  
+Join the conversation on [Telegram](https://t.me/SCZ0X_CH)  
 Get updates, share ideas, or suggest features!
 
 
