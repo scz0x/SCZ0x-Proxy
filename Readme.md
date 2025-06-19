@@ -1,4 +1,3 @@
-
 # 🚀 SCZ-Proxy
 
 **SCZ-Proxy** is a blazing-fast proxy validator written in Go. It supports HTTP, SOCKS4, and SOCKS5 protocols, with concurrent validation, Google reachability testing, deduplication, and auto-organized results — all with a clean terminal interface.
@@ -99,6 +98,11 @@ SCZ-Proxy/
 ├── /results/
 └── /logs/
 ```
+## 📣 Stay Connected
+
+Join the conversation on [Telegram](https://t.me/YourChannelUsername)  
+Get updates, share ideas, or suggest features!
+
 
 Crafted by [Scz0x](https://github.com/scz0x) — SCZ-Proxy is designed to help you test more and wait less.
 ---
