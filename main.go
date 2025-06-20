@@ -2,8 +2,9 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
+	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,236 +13,298 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/net/proxy"
 )
 
-const (
-	concurrencyLimit = 200
-	timeoutSeconds   = 4
-	testURL          = "https://www.google.com"
-)
+const testURL = "https://www.google.com"
 
 var (
-	httpFile   *os.File
-	socks4File *os.File
-	socks5File *os.File
-	summaryLog *os.File
-	errorLog   *os.File
-
-	successCount  = 0
-	totalChecked  = 0
-	totalToCheck  = 0
-	mu            sync.Mutex
-	startTime     time.Time
+	timeout       int
+	onlyProtocol  string
+	silent        bool
 	outputDir     string
+	successCount  int
+	totalChecked  int
+	totalToCheck  int
+	startTime     time.Time
+	mu            sync.Mutex
+	httpFile      *os.File
+	socks4File    *os.File
+	socks5File    *os.File
+	summaryLog    *os.File
+	filesReady    bool
 )
 
-func initLogger() {
-	os.MkdirAll("logs", 0755)
-	logF, err := os.OpenFile("logs/error.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Println("Can't open error log:", err)
-		os.Exit(1)
+func main() {
+	mode := flag.String("mode", "", "api / txt / folder")
+	timeoutPtr := flag.Int("timeout", 4, "Timeout in seconds")
+	only := flag.String("only", "", "Filter by proxy type")
+	silentPtr := flag.Bool("silent", false, "No output")
+	flag.Parse()
+
+	timeout = *timeoutPtr
+	onlyProtocol = strings.ToLower(*only)
+	silent = *silentPtr
+
+	if *mode == "" {
+		fmt.Println("Choose source:")
+		fmt.Println("1. API (apis.txt)")
+		fmt.Println("2. TXT (proxies.txt)")
+		fmt.Println("3. Folder (sources/)")
+		fmt.Print("Your choice: ")
+		var choice string
+		fmt.Scanln(&choice)
+		switch choice {
+		case "1":
+			*mode = "api"
+		case "2":
+			*mode = "txt"
+		case "3":
+			*mode = "folder"
+		default:
+			fmt.Println("Invalid choice.")
+			return
+		}
 	}
-	log.SetOutput(logF)
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	errorLog = logF
-}
 
-func initOutputFiles() {
-	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	outputDir = filepath.Join("results", timestamp)
-	os.MkdirAll(outputDir, 0755)
-
-	httpFile, _ = os.OpenFile(filepath.Join(outputDir, "http.txt"), os.O_CREATE|os.O_WRONLY, 0644)
-	socks4File, _ = os.OpenFile(filepath.Join(outputDir, "socks4.txt"), os.O_CREATE|os.O_WRONLY, 0644)
-	socks5File, _ = os.OpenFile(filepath.Join(outputDir, "socks5.txt"), os.O_CREATE|os.O_WRONLY, 0644)
-	summaryLog, _ = os.OpenFile(filepath.Join(outputDir, "summary.log"), os.O_CREATE|os.O_WRONLY, 0644)
-}
-
-func writeProxy(proxyStr, proxyType string) {
-	var f *os.File
-	switch proxyType {
-	case "http", "https":
-		f = httpFile
-	case "socks4":
-		f = socks4File
-	case "socks5":
-		f = socks5File
+	var allProxies []string
+	switch *mode {
+	case "api":
+		allProxies = loadFromAPIs("apis.txt")
+	case "txt":
+		allProxies = loadFromTXT("proxies.txt")
+	case "folder":
+		allProxies = loadFromFolder("sources")
 	default:
+		fmt.Println("Unsupported mode.")
 		return
 	}
-	f.WriteString(proxyStr + "\n")
+
+	seen := make(map[string]bool)
+	var final []string
+	for _, p := range allProxies {
+		p = strings.TrimSpace(p)
+		if strings.Contains(p, ":") && !seen[p] {
+			seen[p] = true
+			if onlyProtocol == "" || detectType(p) == onlyProtocol {
+				final = append(final, p)
+			}
+		}
+	}
+		totalToCheck = len(final)
+	if !silent {
+		fmt.Printf("Checking %d proxies...\n", totalToCheck)
+	}
+	startTime = time.Now()
+	sem := make(chan struct{}, 200)
+
+	for _, proxy := range final {
+		sem <- struct{}{}
+		go check(proxy, detectType(proxy), sem)
+	}
+	for i := 0; i < cap(sem); i++ {
+		sem <- struct{}{}
+	}
+
+	elapsed := time.Since(startTime).Seconds()
+	if filesReady {
+		writeSummary(elapsed)
+		fmt.Println("\nResults saved in:", outputDir)
+	}
+	fmt.Printf("Done! Working: %d / %d | Time: %.2fs\n", successCount, totalToCheck, elapsed)
+	if !silent {
+		fmt.Print("Press ENTER to exit...")
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
+	}
 }
 
-func checkGoogle(proxyStr, proxyType string, sem chan struct{}) {
+func check(p, proto string, sem chan struct{}) {
 	defer func() { <-sem }()
-	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
-
-	switch proxyType {
-	case "http", "https":
-		proxyURL, _ := url.Parse(fmt.Sprintf("%s://%s", proxyType, proxyStr))
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	if proto == "http" {
+		proxyURL, _ := url.Parse("http://" + p)
 		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-	case "socks4", "socks5":
-		dialer, err := proxy.SOCKS5("tcp", proxyStr, nil, proxy.Direct)
+	} else {
+		dialer, err := proxy.SOCKS5("tcp", p, nil, proxy.Direct)
 		if err != nil {
 			increment()
 			return
 		}
 		client.Transport = &http.Transport{Dial: dialer.Dial}
-	default:
-		increment()
-		return
 	}
-
-	req, _ := http.NewRequest("GET", testURL, nil)
-	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		increment()
-		return
+	resp, err := client.Get(testURL)
+	if err == nil && resp.StatusCode == 200 {
+		mu.Lock()
+		if !filesReady {
+			outputDir = filepath.Join("results", time.Now().Format("2006-01-02_15-04-05"))
+			os.MkdirAll(outputDir, 0755)
+			httpFile, _ = os.Create(filepath.Join(outputDir, "http.txt"))
+			socks4File, _ = os.Create(filepath.Join(outputDir, "socks4.txt"))
+			socks5File, _ = os.Create(filepath.Join(outputDir, "socks5.txt"))
+			summaryLog, _ = os.Create(filepath.Join(outputDir, "summary.log"))
+			filesReady = true
+		}
+		successCount++
+		writeProxy(p, proto)
+		mu.Unlock()
 	}
-	resp.Body.Close()
-
-	mu.Lock()
-	successCount++
-	writeProxy(proxyStr, proxyType)
-	mu.Unlock()
-
 	increment()
 }
 
-func increment() {
-	mu.Lock()
-	totalChecked++
-	printProgress()
-	mu.Unlock()
-}
-
-func printProgress() {
-	elapsed := time.Since(startTime).Seconds()
-	if elapsed == 0 {
-		elapsed = 1
+func writeProxy(p, proto string) {
+	var f *os.File
+	switch proto {
+	case "http":
+		f = httpFile
+	case "socks4":
+		f = socks4File
+	case "socks5":
+		f = socks5File
 	}
-	speed := float64(totalChecked) / elapsed
-	fmt.Printf("\rProgress: %d / %d | ✅ Working: %d | ⚡ %.1f req/s", totalChecked, totalToCheck, successCount, speed)
+	if f != nil {
+		f.WriteString(p + "\n")
+	}
 }
 
-func detectType(proxyStr string) string {
-	port := strings.Split(proxyStr, ":")
+func detectType(p string) string {
+	port := strings.Split(p, ":")
 	if len(port) != 2 {
-		return "unknown"
+		return "http"
 	}
 	switch port[1] {
 	case "1080":
 		return "socks5"
 	case "1081":
 		return "socks4"
-	case "8080", "3128", "8000", "8888", "80":
-		return "http"
 	default:
 		return "http"
 	}
 }
 
-func fetchProxiesFrom(api string) ([]string, error) {
-	resp, err := http.Get(api)
+func increment() {
+	mu.Lock()
+	totalChecked++
+	elapsed := time.Since(startTime).Seconds()
+	if !silent {
+		speed := float64(totalChecked) / (elapsed + 0.1)
+		fmt.Printf("\rProgress: %d/%d | ✅ %d | ⚡ %.1f req/s", totalChecked, totalToCheck, successCount, speed)
+	}
+	mu.Unlock()
+}
+
+func writeSummary(elapsed float64) {
+	if summaryLog != nil {
+		summaryLog.WriteString(fmt.Sprintf("Total: %d\nWorking: %d\nTime: %.2fs\n", totalToCheck, successCount, elapsed))
+	}
+}
+
+func loadFromAPIs(path string) []string {
+	var proxies []string
+	file, err := os.Open(path)
+	if err != nil {
+		return proxies
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		link := strings.TrimSpace(scanner.Text())
+		if link == "" || strings.HasPrefix(link, "#") {
+			continue
+		}
+		found, err := fetchFromAPI(link)
+		if err == nil {
+			proxies = append(proxies, found...)
+		}
+	}
+	return proxies
+}
+
+func loadFromTXT(path string) []string {
+	var proxies []string
+	file, err := os.Open(path)
+	if err != nil {
+		return proxies
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		proxies = append(proxies, line)
+	}
+	return proxies
+}
+
+func loadFromFolder(folder string) []string {
+	var proxies []string
+	filepath.Walk(folder, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".txt") {
+			return nil
+		}
+		list := loadFromTXT(path)
+		proxies = append(proxies, list...)
+		return nil
+	})
+	return proxies
+}
+
+func fetchFromAPI(link string) ([]string, error) {
+	resp, err := http.Get(link)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var proxies []string
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && strings.Contains(line, ":") {
-			proxies = append(proxies, line)
+	ct := resp.Header.Get("Content-Type")
+
+	if strings.Contains(ct, "application/json") {
+		var result struct {
+			Data []struct {
+				IP   string `json:"ip"`
+				Port string `json:"port"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
+			for _, item := range result.Data {
+				if item.IP != "" && item.Port != "" {
+					proxies = append(proxies, fmt.Sprintf("%s:%s", item.IP, item.Port))
+				}
+			}
+		}
+	} else if strings.Contains(ct, "text/html") {
+		doc, err := goquery.NewDocumentFromReader(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		doc.Find("textarea").Each(func(i int, s *goquery.Selection) {
+			lines := strings.Split(s.Text(), "\n")
+			for _, l := range lines {
+				if strings.Contains(l, ":") {
+					proxies = append(proxies, strings.TrimSpace(l))
+				}
+			}
+		})
+		doc.Find("table").Each(func(i int, t *goquery.Selection) {
+			t.Find("tr").Each(func(j int, row *goquery.Selection) {
+				tds := row.Find("td")
+				if tds.Length() >= 2 {
+					ip := strings.TrimSpace(tds.Eq(0).Text())
+					port := strings.TrimSpace(tds.Eq(1).Text())
+					if strings.Contains(ip, ".") && port != "" {
+						proxies = append(proxies, fmt.Sprintf("%s:%s", ip, port))
+					}
+				}
+			})
+		})
+	} else {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.Contains(line, ":") {
+				proxies = append(proxies, line)
+			}
 		}
 	}
 	return proxies, nil
-}
-
-func writeSummary(elapsed float64) {
-	summary := fmt.Sprintf("Total Proxies: %d\nWorking: %d\nTime: %.2f seconds\nSpeed: %.2f req/s\n",
-		totalToCheck, successCount, elapsed, float64(totalChecked)/elapsed)
-	summaryLog.WriteString(summary)
-}
-
-func main() {
-	initLogger()
-	initOutputFiles()
-	defer errorLog.Close()
-	defer httpFile.Close()
-	defer socks4File.Close()
-	defer socks5File.Close()
-	defer summaryLog.Close()
-	os.MkdirAll("results", 0755)
-
-	fmt.Println("╔══════════════════════════════════╗")
-	fmt.Println("║       SCZ-Proxy by Ahmed ⚡       ║")
-	fmt.Println("║     Ultra-Fast Proxy Checker     ║")
-	fmt.Println("╚══════════════════════════════════╝")
-
-	// Count total APIs before reading
-	apiLines, err := os.ReadFile("apis.txt")
-	if err != nil {
-		log.Fatalf("Cannot open apis.txt: %v", err)
-	}
-	lines := strings.Split(string(apiLines), "\n")
-	totalAPIs := 0
-	for _, line := range lines {
-		if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			totalAPIs++
-		}
-	}
-	fmt.Printf("🔄 Fetching proxies from %d source(s)...\n", totalAPIs)
-
-	// Re-open for processing
-	apisFile, _ := os.Open("apis.txt")
-	defer apisFile.Close()
-
-	var allProxies []string
-	scanner := bufio.NewScanner(apisFile)
-	for scanner.Scan() {
-		api := strings.TrimSpace(scanner.Text())
-		if api == "" || strings.HasPrefix(api, "#") {
-			continue
-		}
-		proxies, err := fetchProxiesFrom(api)
-		if err == nil {
-			allProxies = append(allProxies, proxies...)
-		}
-	}
-
-	unique := make(map[string]bool)
-	for _, p := range allProxies {
-		unique[p] = true
-	}
-	var proxyList []string
-	for p := range unique {
-		proxyList = append(proxyList, p)
-	}
-
-	totalToCheck = len(proxyList)
-	fmt.Printf("🔎 Total unique proxies to check: %d\n", totalToCheck)
-
-	semaphore := make(chan struct{}, concurrencyLimit)
-	startTime = time.Now()
-
-	for _, proxy := range proxyList {
-		semaphore <- struct{}{}
-		go checkGoogle(proxy, detectType(proxy), semaphore)
-	}
-
-	for i := 0; i < cap(semaphore); i++ {
-		semaphore <- struct{}{}
-	}
-
-	elapsed := time.Since(startTime).Seconds()
-	writeSummary(elapsed)
-	fmt.Printf("\n\n✅ Done! Working: %d / %d\n", successCount, totalToCheck)
-	fmt.Printf("🗂 Results in: %s\n", outputDir)
-	fmt.Printf("⏱️ Total Time: %.2f seconds\n", elapsed)
-	fmt.Print("\nPress ENTER to exit...")
-	bufio.NewReader(os.Stdin).ReadBytes('\n')
 }
