@@ -1,42 +1,54 @@
-# ⚡ SCZ-Proxy — Ultra-Fast Proxy Validator
+# SCZ-Proxy v1
 
-SCZ-Proxy أداة مكتوبة بلغة Go لفحص قائمة ضخمة من البروكسيات بجميع أنواعها (HTTP / SOCKS4 / SOCKS5) بسرعة عالية وبدقة، مصممة خصيصًا لتناسب بيئات الـ VPS والأدوات الاحترافية.
+A blazing-fast proxy scanner written in Go. Supports HTTP, SOCKS4, and SOCKS5 protocols with smart concurrency, flexible input sources, and real-time performance tracking.
 
----
+## ⚙ Features
 
-## 🎯 الميزات
+- Supports `HTTP`, `SOCKS4`, and `SOCKS5` proxies
+- Input from APIs (`apis.txt`), text files (`proxies.txt`), or folders (`sources/`)
+- Filter proxies by type using `--only=http|socks5|socks4`
+- Set request timeout with `--timeout`
+- Silent mode for automation: `--silent`
+- Real-time progress and request speed tracking
+- Saves working proxies by type only when results are found
 
-- 🔄 دعم الفحص المتوازي (concurrent scanning)
-- 📡 اختبار الوصول الفعلي لـ Google (Reachability Check)
-- 🧠 فلترة التكرارات تلقائيًا
-- 📂 تنظيم النتائج حسب التاريخ والوقت
-- 📈 شريط تقدم حي + عداد سرعة (req/s)
-- 📄 ملف تقرير `summary.log` لكل تشغيل
-- 🧪 تقسيم النتائج إلى ملفات حسب البروتوكول
-
----
-
-## 🛠️ المتطلبات الأساسية
-
-قبل بناء أو تشغيل SCZ-Proxy، تأكد أن لديك:
-
-### ✅ التطبيقات والأدوات:
-
-| الأداة         | الاستخدام                                |
-|----------------|--------------------------------------------|
-| [Go 1.20+](https://go.dev/dl) | لبناء الأداة (go build)                    |
-| Git (اختياري) | لاستنساخ المشروع من مستودع GitHub |
-| محرر نصوص     | مثل VS Code أو Notepad++ للتعديل         |
-| CMD / PowerShell / Terminal | لتشغيل الأوامر والتنفيذ              |
-
-> 📍 ملاحظة: الأداة لا تحتاج تثبيت إضافات خارجية — كل شيء مبني باستخدام مكتبات Go القياسية و `golang.org/x/net/proxy`.
-
----
-
-## 🚀 خطوات التشغيل
-
-### 1. تحميل المشروع
+## 🚀 Usage
 
 ```bash
-git clone https://github.com/username/SCZ-Proxy.git
-cd SCZ-Proxy
+# Build
+go build -o scz-proxy
+
+# Scan from APIs
+./scz-proxy -mode=api
+
+# Scan from file and filter SOCKS5
+./scz-proxy -mode=txt -only=socks5
+
+# Scan folder with custom timeout
+./scz-proxy -mode=folder -timeout=6
+```
+
+Ensure these files/folders are in place:
+
+- `apis.txt`: one proxy API link per line
+- `proxies.txt`: plain list of proxies (IP:PORT)
+- `sources/`: folder containing multiple .txt files
+
+## 📦 Output
+
+Working proxies are saved to:
+
+```
+results/YYYY-MM-DD_HH-MM-SS/
+├── http.txt
+├── socks4.txt
+├── socks5.txt
+└── summary.log
+```
+
+## 📢 Stay Updated
+
+Join the official Telegram channel for updates, APIs, discussions, and releases:  
+👉 [https://t.me/SCZ0X_CH]
+
+---
