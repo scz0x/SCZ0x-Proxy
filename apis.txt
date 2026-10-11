@@ -102,3 +102,4 @@ https://raw.githubusercontent.com/prxchk/proxy-list/main/proxies/socks4_19-06-20
 https://raw.githubusercontent.com/prxchk/proxy-list/main/proxies/socks5_19-06-2025.txt
 https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all
 https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc
+https://rcloak.com/api/proxies/raw?protocol=all
